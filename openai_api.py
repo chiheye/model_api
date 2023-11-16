@@ -249,13 +249,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model_dict = {
-        "32": "chatglm3-6b-32k",
+        "32": "chatglm3-6b-32k",#可设置本地模型
     }
 
     model_name = model_dict.get(args.model_name, "chatglm3-6b-32k")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_name, trust_remote_code=True).cuda()
-    embeddings_model = SentenceTransformer('m3e-large', device='cuda')
+    embeddings_model = SentenceTransformer('m3e-large', device='cuda')#可设置本地模型
 
     uvicorn.run(app, host='0.0.0.0', port=6006, workers=1)
