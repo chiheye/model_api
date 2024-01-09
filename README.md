@@ -1,2 +1,3 @@
 # model_api
-同时支持chatglm3，m3e
+openai_api同时支持chatglm3，m3e
+modelapi支持sqlcoder
