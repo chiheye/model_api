@@ -263,4 +263,4 @@ if __name__ == "__main__":
     embeddings_model = SentenceTransformer('m3e-large', device='cuda')
 
     # 运行FastAPI应用
-    uvicorn.run(app, host='0.0.0.0', port=6006, workers=1)
+    uvicorn.run(app, host='0.0.0.0', port=6006, workers=1,log_level="info")
