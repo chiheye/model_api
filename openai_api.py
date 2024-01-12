@@ -1,33 +1,36 @@
 # coding=utf-8
-import argparse
-import time
-from contextlib import asynccontextmanager
-from typing import List, Literal, Optional, Union
 
-import numpy as np
-import tiktoken
-import torch
-import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
-from sklearn.preprocessing import PolynomialFeatures
-from sse_starlette.sse import EventSourceResponse
-from starlette.status import HTTP_401_UNAUTHORIZED
-from transformers import AutoModel, AutoTokenizer
+# 导入所需的库和模块
+import argparse  # 用于处理命令行参数的库
+import time  # 用于处理时间的库
+from contextlib import asynccontextmanager  # 用于异步上下文管理器的库
+from typing import List, Literal, Optional, Union  # 用于类型提示的库
 
+import numpy as np  # 用于数值计算的库
+import tiktoken  # 用于计算文本中的令牌数的库
+import torch  # PyTorch深度学习库
+import uvicorn  # ASGI服务器的库
+from fastapi import Depends, FastAPI, HTTPException, Request  # FastAPI库的相关模块
+from fastapi.middleware.cors import CORSMiddleware  # FastAPI中间件，处理CORS
+from pydantic import BaseModel, Field  # 用于数据验证和设置的库
+from sentence_transformers import SentenceTransformer  # 用于文本嵌入的库
+from sklearn.preprocessing import PolynomialFeatures  # 用于多项式特征扩展的库
+from sse_starlette.sse import EventSourceResponse  # 用于处理Server-Sent Events的库
+from starlette.status import HTTP_401_UNAUTHORIZED  # HTTP状态码
+from transformers import AutoModel, AutoTokenizer  # Hugging Face Transformers库
 
+# 创建一个异步上下文管理器，用于收集GPU内存
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # collects GPU memory
+async def lifespan(app: FastAPI):
     yield
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 
-
+# 创建FastAPI应用
 app = FastAPI(lifespan=lifespan)
 
+# 添加CORS中间件，处理跨域请求
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,17 +39,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# 定义聊天消息的数据模型
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
-    content: str
+    prompt: str  # Update to include only "prompt"
+    question: str  # Update to include only "question"
 
-
+# 定义增量消息的数据模型
 class DeltaMessage(BaseModel):
     role: Optional[Literal["user", "assistant", "system"]] = None
-    content: Optional[str] = None
+    prompt: Optional[str] = None  # Update to include only "prompt"
+    question: Optional[str] = None  # Update to include only "question"
 
-
+# 定义聊天完成请求的数据模型
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
@@ -55,19 +60,19 @@ class ChatCompletionRequest(BaseModel):
     max_length: Optional[int] = None
     stream: Optional[bool] = False
 
-
+# 定义聊天完成响应中的选择数据模型
 class ChatCompletionResponseChoice(BaseModel):
     index: int
     message: ChatMessage
     finish_reason: Literal["stop", "length"]
 
-
+# 定义聊天完成响应中的流式选择数据模型
 class ChatCompletionResponseStreamChoice(BaseModel):
     index: int
     delta: DeltaMessage
     finish_reason: Optional[Literal["stop", "length"]]
 
-
+# 定义聊天完成响应的数据模型
 class ChatCompletionResponse(BaseModel):
     model: str
     object: Literal["chat.completion", "chat.completion.chunk"]
@@ -76,7 +81,7 @@ class ChatCompletionResponse(BaseModel):
     ]
     created: Optional[int] = Field(default_factory=lambda: int(time.time()))
 
-
+# 验证token的函数
 async def verify_token(request: Request):
     auth_header = request.headers.get('Authorization')
     if auth_header:
@@ -91,78 +96,78 @@ async def verify_token(request: Request):
         detail="Invalid authorization credentials",
     )
 
-
+# 定义嵌入请求的数据模型
 class EmbeddingRequest(BaseModel):
     input: List[str]
     model: str
 
-
+# 定义嵌入响应的数据模型
 class EmbeddingResponse(BaseModel):
     data: list
     model: str
     object: str
     usage: dict
 
-
+# 计算文本字符串中的令牌数量的函数
 def num_tokens_from_string(string: str) -> int:
-    """Returns the number of tokens in a text string."""
     encoding = tiktoken.get_encoding('cl100k_base')
     num_tokens = len(encoding.encode(string))
     return num_tokens
 
-
+# 扩展特征的函数
 def expand_features(embedding, target_length):
     poly = PolynomialFeatures(degree=2)
     expanded_embedding = poly.fit_transform(embedding.reshape(1, -1))
     expanded_embedding = expanded_embedding.flatten()
     if len(expanded_embedding) > target_length:
-        # 如果扩展后的特征超过目标长度，可以通过截断或其他方法来减少维度
         expanded_embedding = expanded_embedding[:target_length]
     elif len(expanded_embedding) < target_length:
-        # 如果扩展后的特征少于目标长度，可以通过填充或其他方法来增加维度
         expanded_embedding = np.pad(
             expanded_embedding, (0, target_length - len(expanded_embedding))
         )
     return expanded_embedding
 
-
+# 处理创建聊天完成请求的端点
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def create_chat_completion(request: ChatCompletionRequest):
     global model, tokenizer
 
     if request.messages[-1].role != "user":
         raise HTTPException(status_code=400, detail="Invalid request")
-    query = request.messages[-1].content
+    
+    prompt = request.messages[-1].prompt  # Use only "prompt"
+    question = request.messages[-1].question  # Use only "question"
 
     prev_messages = request.messages[:-1]
     if len(prev_messages) > 0 and prev_messages[0].role == "system":
-        query = prev_messages.pop(0).content + query
+        prompt = prev_messages.pop(0).prompt + prompt
+        question = prev_messages.pop(0).question + question
 
     history = []
     if len(prev_messages) % 2 == 0:
         for i in range(0, len(prev_messages), 2):
             if prev_messages[i].role == "user" and prev_messages[i+1].role == "assistant":
                 history.append(
-                    {"role": prev_messages[i].role, "content": prev_messages[i].content})
+                    {"role": prev_messages[i].role, "prompt": prev_messages[i].prompt, "question": prev_messages[i].question})
                 history.append(
-                    {"role": prev_messages[i+1].role, "content": prev_messages[i+1].content})
+                    {"role": prev_messages[i+1].role, "prompt": prev_messages[i+1].prompt, "question": prev_messages[i+1].question})
 
     if request.stream:
-        generate = predict(query, history, request.model)
+        generate = predict(prompt, question, history, request.model)  # Use only "prompt" and "question"
         return EventSourceResponse(generate, media_type="text/event-stream")
 
-    response, _ = model.chat(tokenizer, query, history=history)
+    response, _ = model.chat(tokenizer, prompt, question, history=history)  # Use only "prompt" and "question"
 
     choice_data = ChatCompletionResponseChoice(
         index=0,
-        message=ChatMessage(role="assistant", content=response),
+        message=ChatMessage(role="assistant", prompt=response, question=""),  # Use only "prompt"
         finish_reason="stop"
     )
 
     return ChatCompletionResponse(model=request.model, choices=[choice_data], object="chat.completion")
 
-
-async def predict(query: str, history: None, model_id: str):
+# 预测函数，用于处理流式请求
+async def predict(prompt: str, question: str, history: None, model_id: str):
     global model, tokenizer
 
     if history is None:
@@ -179,7 +184,7 @@ async def predict(query: str, history: None, model_id: str):
 
     current_length = 0
 
-    for new_response, _ in model.stream_chat(tokenizer, query, history):
+    for new_response, _ in model.stream_chat(tokenizer, prompt, question, history):  # Use only "prompt" and "question"
         if len(new_response) == current_length:
             continue
 
@@ -188,7 +193,7 @@ async def predict(query: str, history: None, model_id: str):
 
         choice_data = ChatCompletionResponseStreamChoice(
             index=0,
-            delta=DeltaMessage(content=new_text),
+            delta=DeltaMessage(prompt="", question=new_text),  # Use only "prompt"
             finish_reason=None
         )
         chunk = ChatCompletionResponse(model=model_id, choices=[
@@ -205,7 +210,7 @@ async def predict(query: str, history: None, model_id: str):
     yield "{}".format(chunk.json(exclude_unset=True))
     yield '[DONE]'
 
-
+# 处理获取嵌入向量请求的端点
 @app.post("/v1/embeddings", response_model=EmbeddingResponse)
 async def get_embeddings(
     request: EmbeddingRequest, token: bool = Depends(verify_token)
@@ -242,20 +247,20 @@ async def get_embeddings(
 
     return response
 
-
+# 解析命令行参数
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", default="16", type=str, help="Model name")
+    parser.add_argument("--model_name", default="None", type=str, help="Model name")
     args = parser.parse_args()
 
     model_dict = {
-        "32": "chatglm3-6b-32k",#可设置本地模型
+        "None":"chatglm3-6b",
     }
 
-    model_name = model_dict.get(args.model_name, "chatglm3-6b-32k")
-
+    model_name = model_dict.get(args.model_name, "chatglm3-6b")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModel.from_pretrained(model_name, trust_remote_code=True).cuda()
-    embeddings_model = SentenceTransformer('m3e-large', device='cuda')#可设置本地模型
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True,torch_dtype=torch.float16).cuda()
+    embeddings_model = SentenceTransformer('m3e-large', device='cuda')
 
+    # 运行FastAPI应用
     uvicorn.run(app, host='0.0.0.0', port=6006, workers=1)
